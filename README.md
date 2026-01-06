@@ -45,14 +45,58 @@ This workflow is a reference/tracking document showing the intended automation f
 
 Kubernetes job creation workflow example.
 
-**⚠️ Security Note**: This workflow currently uses a hardcoded JWT token placeholder. For production use, implement a more secure authentication method such as:
+**⚠️ Security Note**: This workflow currently uses a hardcoded JWT token placeholder. For production use, implement a more secure authentication method.
+
+### Recommended Secure Approach: Service Account Token Mounting
+
+Instead of hardcoding tokens, use Kubernetes' built-in service account token mounting:
+
+1. **Create Service Account** in the target namespace
+2. **Create Role** with required permissions (e.g., job creation)
+3. **Create RoleBinding** to bind the service account to the role
+4. **Specify `serviceAccountName`** in the job spec when creating the job
+5. **Token is automatically mounted** in the job pod at `/var/run/secrets/kubernetes.io/serviceaccount/token`
+
+This way, code running inside the job can read the token from the filesystem and use it for Kubernetes API calls, without exposing tokens in workflow definitions.
+
+**Example Setup:**
+```bash
+# 1. Create service account
+kubectl create serviceaccount job-runner -n test
+
+# 2. Create role with permissions
+kubectl create role job-creator -n test \
+  --verb=create,get,list,watch \
+  --resource=jobs
+
+# 3. Bind service account to role
+kubectl create rolebinding job-runner-binding -n test \
+  --role=job-creator \
+  --serviceaccount=test:job-runner
+
+# 4. In job manifest, specify:
+# spec:
+#   template:
+#     spec:
+#       serviceAccountName: job-runner
+#       containers: ...
+```
+
+**Inside the job pod**, read the token:
+```bash
+cat /var/run/secrets/kubernetes.io/serviceaccount/token
+```
+
+### Alternative Secure Methods
+
 - Using n8n environment variables for token storage
 - Implementing token rotation
-- Using Kubernetes service account token projection
 - Integrating with external secret management systems (e.g., HashiCorp Vault, Kubernetes Secrets)
 - Using OIDC authentication if available
 
 ### Prerequisites Setup
+
+**Note**: This setup creates a service account for n8n to authenticate when creating jobs. For jobs that need to make Kubernetes API calls internally, see the "Recommended Secure Approach" section above.
 
 #### Step 1: Create Namespace (if needed)
 
@@ -68,7 +112,7 @@ kubectl create serviceaccount n8n-k8s-job-creator -n n8n
 
 #### Step 3: Grant Permissions
 
-Create ClusterRoleBinding to allow job creation:
+**Option A: ClusterRoleBinding (broader permissions)**
 
 ```bash
 kubectl create clusterrolebinding n8n-job-creator-binding \
@@ -76,7 +120,7 @@ kubectl create clusterrolebinding n8n-job-creator-binding \
   --serviceaccount=n8n:n8n-k8s-job-creator
 ```
 
-Alternatively, create a custom Role with specific permissions:
+**Option B: Namespace-scoped Role (recommended - least privilege)**
 
 ```bash
 # Create Role
@@ -150,6 +194,8 @@ Example output: `Kubernetes control plane is running at https://192.168.122.100:
 4. **Get K8s Token** - Retrieves service account token (configured in prerequisites)
 5. **Create Kubernetes Job** - POSTs job manifest to Kubernetes API
 6. **Format Response** - Returns job creation status
+
+**Note**: When creating jobs that need to make Kubernetes API calls, specify `serviceAccountName` in the job manifest's `spec.template.spec` section. The token will be automatically mounted at `/var/run/secrets/kubernetes.io/serviceaccount/token` inside the job pod.
 
 ### Verification
 
