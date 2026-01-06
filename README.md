@@ -87,12 +87,6 @@ kubectl create rolebinding job-runner-binding -n test \
 cat /var/run/secrets/kubernetes.io/serviceaccount/token
 ```
 
-### Alternative Secure Methods
-
-- Using n8n environment variables for token storage
-- Implementing token rotation
-- Integrating with external secret management systems (e.g., HashiCorp Vault, Kubernetes Secrets)
-- Using OIDC authentication if available
 
 ### Prerequisites Setup
 
