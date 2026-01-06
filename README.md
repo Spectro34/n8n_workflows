@@ -45,6 +45,13 @@ This workflow is a reference/tracking document showing the intended automation f
 
 Kubernetes job creation workflow example.
 
+**⚠️ Security Note**: This workflow currently uses a hardcoded JWT token placeholder. For production use, implement a more secure authentication method such as:
+- Using n8n environment variables for token storage
+- Implementing token rotation
+- Using Kubernetes service account token projection
+- Integrating with external secret management systems (e.g., HashiCorp Vault, Kubernetes Secrets)
+- Using OIDC authentication if available
+
 ### Prerequisites Setup
 
 #### Step 1: Create Namespace (if needed)
@@ -101,11 +108,39 @@ Example output: `Kubernetes control plane is running at https://192.168.122.100:
 
 #### Step 6: Configure Workflow
 
+**Option A: Using Environment Variables (Recommended - More Secure)**
+
+1. Set n8n environment variables:
+   - `K8S_SERVICE_ACCOUNT_TOKEN` = token from Step 4
+   - `K8S_API_SERVER` = API server URL from Step 5
+2. Import `k8s-example.json` into n8n
+3. Update the "Get K8s Service Account Token" node JavaScript code to:
+   ```javascript
+   // In n8n Code nodes, use $env.VARIABLE_NAME for environment variables
+   const token = $env.K8S_SERVICE_ACCOUNT_TOKEN || 'K8S_SERVICE_ACCOUNT_TOKEN_PLACEHOLDER';
+   const apiServer = $env.K8S_API_SERVER || 'K8S_API_SERVER_PLACEHOLDER';
+   
+   return {
+     json: {
+       ...$input.item.json,
+       k8sToken: token,
+       k8sApiServer: apiServer
+     }
+   };
+   ```
+   
+   **Note**: Set environment variables in n8n: Settings → Environment Variables
+4. Save the workflow
+
+**Option B: Direct Replacement (Less Secure - For Testing Only)**
+
 1. Import `k8s-example.json` into n8n
 2. Open the "Get K8s Service Account Token" node
 3. Replace `K8S_SERVICE_ACCOUNT_TOKEN_PLACEHOLDER` with the token from Step 4
 4. Replace `K8S_API_SERVER_PLACEHOLDER` with the API server URL from Step 5
 5. Save the workflow
+
+**Note**: Option A is recommended for production. Never commit tokens to version control.
 
 ### Workflow Steps
 
