@@ -1,0 +1,218 @@
+{
+  "name": "Kubernetes Job Creator - Secure Demo",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "job-name",
+              "name": "jobName",
+              "value": "=n8n-test-job-{{ $now.format(\"YYYYMMDD-HHmmss\") }}",
+              "type": "string"
+            },
+            {
+              "id": "namespace",
+              "name": "namespace",
+              "value": "=default",
+              "type": "string"
+            },
+            {
+              "id": "image",
+              "name": "image",
+              "value": "=busybox:latest",
+              "type": "string"
+            },
+            {
+              "id": "command",
+              "name": "command",
+              "value": "=[\"sh\", \"-c\", \"echo Hello from n8n Kubernetes Job! && sleep 10 && echo Job completed successfully\"]",
+              "type": "string"
+            }
+          ]
+        },
+        "mode": "manual"
+      },
+      "id": "set-job-config",
+      "name": "Set Job Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Build Kubernetes Job manifest\nconst jobName = $input.item.json.jobName;\nconst namespace = $input.item.json.namespace;\nconst image = $input.item.json.image;\nconst command = JSON.parse($input.item.json.command);\n\n// Sanitize job name for Kubernetes (lowercase, alphanumeric and hyphens only, max 63 chars)\nlet sanitizedName = jobName.toLowerCase()\n  .replace(/[^a-z0-9-]/g, '-')\n  .replace(/^-+|-+$/g, '')\n  .substring(0, 63);\n// Ensure it doesn't start or end with hyphen\nif (sanitizedName.endsWith('-')) {\n  sanitizedName = sanitizedName.slice(0, -1);\n}\nif (sanitizedName.startsWith('-')) {\n  sanitizedName = sanitizedName.substring(1);\n}\n// Ensure it's not empty\nif (!sanitizedName) {\n  sanitizedName = 'n8n-job-' + Date.now();\n}\n\nconst jobManifest = {\n  apiVersion: 'batch/v1',\n  kind: 'Job',\n  metadata: {\n    name: sanitizedName,\n    namespace: namespace,\n    labels: {\n      'created-by': 'n8n',\n      'workflow': 'kubernetes-job-creator'\n    }\n  },\n  spec: {\n    ttlSecondsAfterFinished: 300,\n    backoffLimit: 3,\n    template: {\n      spec: {\n        restartPolicy: 'Never',\n        containers: [\n          {\n            name: 'job-container',\n            image: image,\n            command: command,\n            resources: {\n              requests: {\n                memory: '64Mi',\n                cpu: '100m'\n              },\n              limits: {\n                memory: '128Mi',\n                cpu: '200m'\n              }\n            }\n          }\n        ]\n      }\n    }\n  }\n};\n\nreturn {\n  json: {\n    jobManifest: jobManifest,\n    jobName: sanitizedName,\n    namespace: namespace,\n    image: image,\n    command: command\n  }\n};",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "build-job-manifest",
+      "name": "Build Job Manifest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Get Kubernetes API configuration\n// Using service account token for authentication\n// IMPORTANT: Replace K8S_SERVICE_ACCOUNT_TOKEN_PLACEHOLDER with your actual service account token\n// You can get the token using: kubectl create token <service-account-name> -n <namespace>\nconst token = 'K8S_SERVICE_ACCOUNT_TOKEN_PLACEHOLDER';\n// IMPORTANT: Replace K8S_API_SERVER_PLACEHOLDER with your Kubernetes API server URL\n// Example: 'https://192.168.122.100:6443' or get it with: kubectl cluster-info\nconst apiServer = 'K8S_API_SERVER_PLACEHOLDER';\n\nreturn {\n  json: {\n    ...$input.item.json,\n    k8sToken: token,\n    k8sApiServer: apiServer\n  }\n};",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "get-k8s-token",
+      "name": "Get K8s Service Account Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.k8sApiServer }}/apis/batch/v1/namespaces/{{ $json.namespace }}/jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.k8sToken }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.jobManifest }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          },
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "create-k8s-job",
+      "name": "Create Kubernetes Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "status",
+              "name": "status",
+              "value": "={{ $json.statusCode === 201 ? \"success\" : \"error\" }}",
+              "type": "string"
+            },
+            {
+              "id": "job-name",
+              "name": "jobName",
+              "value": "={{ $json.body?.metadata?.name || $(\"Build Job Manifest\").item.json.jobName }}",
+              "type": "string"
+            },
+            {
+              "id": "message",
+              "name": "message",
+              "value": "={{ $json.statusCode === 201 ? \"Job created successfully\" : \"Failed to create job: \" + ($json.body?.message || $json.statusCode) }}",
+              "type": "string"
+            },
+            {
+              "id": "status-code",
+              "name": "statusCode",
+              "value": "={{ $json.statusCode }}",
+              "type": "number"
+            }
+          ]
+        },
+        "mode": "manual"
+      },
+      "id": "format-response",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1340, 300]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Job Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Job Configuration": {
+      "main": [
+        [
+          {
+            "node": "Build Job Manifest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Job Manifest": {
+      "main": [
+        [
+          {
+            "node": "Get K8s Service Account Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get K8s Service Account Token": {
+      "main": [
+        [
+          {
+            "node": "Create Kubernetes Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Kubernetes Job": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-01-05T00:00:00.000Z",
+  "versionId": "1"
+}
+
+
+

@@ -1,0 +1,940 @@
+{
+  "name": "openSUSE Factory Package Update Automation",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "slack-trigger",
+      "name": "Slack Trigger",
+      "type": "n8n-nodes-base.slackTrigger",
+      "typeVersion": 2.1,
+      "position": [
+        -960,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Parse Slack slash command\nconst event = $input.item.json.event || $input.item.json || {};\nconst text = event.text || $input.item.json.text || '';\nconst userId = event.user || $input.item.json.user || '';\nconst channelId = event.channel || $input.item.json.channel || '';\n\n// Parse command: /pkg-check <package> or /pkg-update <package>\nconst commandMatch = text.match(/\\/(pkg-check|pkg-update)\\s+(\\S+)/);\n\nif (!commandMatch) {\n  return { json: { error: 'Invalid command format. Use: /pkg-check <package> or /pkg-update <package>', skip: true } };\n}\n\nconst command = commandMatch[1]; // 'pkg-check' or 'pkg-update'\nconst packageName = commandMatch[2];\n\nreturn {\n  json: {\n    command: command,\n    packageName: packageName,\n    userId: userId,\n    channelId: channelId,\n    action: command === 'pkg-update' ? 'update' : 'check'\n  }\n};"
+      },
+      "id": "parse-command",
+      "name": "Parse Command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -704,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "skip-check",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-if-skip",
+      "name": "Check If Skip",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -496,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.opensuse.org/source/openSUSE:Factory/{{ $json.packageName }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "options": {
+          "allowUnauthorizedCerts": false,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "get-factory-version",
+      "name": "Get Factory Version",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -256,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Parse Factory version from OBS\nconst response = $input.item.json.body || {};\nconst packageName = $input.item.json.packageName;\n\nlet factoryVersion = 'unknown';\n\nif (response.project && response.project.repository) {\n  const repos = response.project.repository;\n  for (const repo of repos) {\n    if (repo.path && repo.path.length > 0) {\n      const path = repo.path.find(p => p.name === 'x86_64');\n      if (path && path.version) {\n        factoryVersion = path.version;\n        break;\n      }\n    }\n  }\n}\n\nreturn {\n  json: {\n    ...$input.item.json,\n    factoryVersion: factoryVersion\n  }\n};"
+      },
+      "id": "parse-factory-version",
+      "name": "Parse Factory Version",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -64,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://release-monitoring.org/api/v2/projects/?name={{ $json.packageName }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "options": {
+          "allowUnauthorizedCerts": false,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "get-upstream-version",
+      "name": "Get Upstream Version",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        128,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Compare versions and determine if update needed\nconst upstreamData = $input.item.json.body || {};\nconst factoryVersion = $input.item.json.factoryVersion;\nconst packageName = $input.item.json.packageName;\n\nlet upstreamVersion = 'unknown';\nlet updateNeeded = false;\n\nif (upstreamData.projects && upstreamData.projects.length > 0) {\n  upstreamVersion = upstreamData.projects[0].latest_version || 'unknown';\n}\n\n// Simple version comparison\nif (factoryVersion !== 'unknown' && upstreamVersion !== 'unknown') {\n  updateNeeded = upstreamVersion !== factoryVersion;\n}\n\nreturn {\n  json: {\n    ...$input.item.json,\n    upstreamVersion: upstreamVersion,\n    updateNeeded: updateNeeded\n  }\n};"
+      },
+      "id": "compare-versions",
+      "name": "Compare Versions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gemma:2b",
+        "options": {
+          "temperature": 0.7
+        }
+      },
+      "id": "ollama-chat-model",
+      "name": "Ollama Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        2304,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Analyze this package update:\n\nPackage: {{ $json.packageName }}\nFactory Version: {{ $json.factoryVersion }}\nUpstream Version: {{ $json.upstreamVersion }}\nUpdate Needed: {{ $json.updateNeeded }}\n\nProvide:\n1. Analysis of version differences\n2. Key changes and impact assessment\n3. Recommended changelog entry (RPM format)\n4. Potential risks or considerations\n5. Recommended action (proceed/caution/manual-review)",
+        "options": {}
+      },
+      "id": "ai-analyze-update",
+      "name": "AI: Analyze Update",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        560,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Parse AI response and extract structured data\nconst aiOutput = $input.item.json.output || $input.item.json.text || '';\nconst packageName = $input.item.json.packageName || 'unknown';\n\n// Extract changelog if present\nlet aiChangelog = '';\nconst changelogMatch = aiOutput.match(/changelog[\\s\\S]*?([*]\\s+[^\\n]+[\\s\\S]*?)(?=\\n\\n|$)/i);\nif (changelogMatch) {\n  aiChangelog = changelogMatch[1].trim();\n} else {\n  // Generate default changelog\n  aiChangelog = `* ${new Date().toLocaleDateString('en-US', {weekday: 'short', year: 'numeric', month: 'short', day: 'numeric'})} Maintainer <maintainer@example.com> - ${$input.item.json.upstreamVersion}\\n- Update to version ${$input.item.json.upstreamVersion}`;\n}\n\n// Extract recommendations\nlet aiRecommendation = 'proceed';\nif (aiOutput.toLowerCase().includes('caution') || aiOutput.toLowerCase().includes('manual')) {\n  aiRecommendation = 'caution';\n} else if (aiOutput.toLowerCase().includes('proceed') || aiOutput.toLowerCase().includes('safe')) {\n  aiRecommendation = 'proceed';\n}\n\n// Extract risk assessment\nlet aiRiskLevel = 'low';\nif (aiOutput.toLowerCase().includes('high risk') || aiOutput.toLowerCase().includes('breaking')) {\n  aiRiskLevel = 'high';\n} else if (aiOutput.toLowerCase().includes('medium risk') || aiOutput.toLowerCase().includes('compatibility')) {\n  aiRiskLevel = 'medium';\n}\n\nreturn {\n  json: {\n    ...$input.item.json,\n    aiAnalysis: aiOutput,\n    aiChangelog: aiChangelog,\n    aiRecommendation: aiRecommendation,\n    aiRiskLevel: aiRiskLevel,\n    aiConsiderations: aiOutput.split('\\n').filter(line => line.includes('consider') || line.includes('risk') || line.includes('impact')).join('\\n')\n  }\n};"
+      },
+      "id": "parse-ai-response",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        992,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "action-check",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "update",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-action",
+      "name": "Check Action Type",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1392,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "update-check",
+              "leftValue": "={{ $json.updateNeeded }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-update-needed",
+      "name": "Check If Update Needed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1696,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Build Kubernetes Job manifest\nconst packageName = $input.item.json.packageName;\nconst factoryVersion = $input.item.json.factoryVersion;\nconst upstreamVersion = $input.item.json.upstreamVersion;\nconst timestamp = Date.now();\nconst aiChangelog = $input.item.json.aiChangelog || \"\";\nconst aiRiskLevel = $input.item.json.aiRiskLevel || \"low\";\n\n// Sanitize job name for Kubernetes (lowercase, alphanumeric and hyphens only, max 63 chars)\nlet sanitizedName = `obs-package-update-${packageName}-${timestamp}`.toLowerCase()\n  .replace(/[^a-z0-9-]/g, '-')\n  .replace(/^-+|-+$/g, '')\n  .substring(0, 63);\nif (sanitizedName.endsWith('-')) {\n  sanitizedName = sanitizedName.slice(0, -1);\n}\nif (sanitizedName.startsWith('-')) {\n  sanitizedName = sanitizedName.substring(1);\n}\nif (!sanitizedName) {\n  sanitizedName = 'n8n-job-' + Date.now();\n}\n\nconst jobManifest = {\n  apiVersion: 'batch/v1',\n  kind: 'Job',\n  metadata: {\n    name: sanitizedName,\n    namespace: 'n8n',\n    annotations: {\n      'ai.changelog': aiChangelog,\n      'ai.risk-level': aiRiskLevel\n    }\n  },\n  spec: {\n    ttlSecondsAfterFinished: 3600,\n    backoffLimit: 1,\n    template: {\n      spec: {\n        restartPolicy: 'Never',\n        containers: [{\n          name: 'automation-worker',\n          image: 'registry.opensuse.org/opensuse/tumbleweed:latest',\n          command: ['/bin/sh', '-c', `echo 'Package: ${packageName}, Factory: ${factoryVersion}, Upstream: ${upstreamVersion}'; sleep 30`]\n        }]\n      }\n    }\n  }\n};\n\nreturn {\n  json: {\n    ...$input.item.json,\n    jobManifest: jobManifest\n  }\n};"
+      },
+      "id": "build-job-manifest",
+      "name": "Build Job Manifest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1936,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://{{ $env.K8S_API_SERVER || 'K8S_API_SERVER_PLACEHOLDER' }}/apis/batch/v1/namespaces/n8n/jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.K8S_SERVICE_ACCOUNT_TOKEN || 'K8S_SERVICE_ACCOUNT_TOKEN_PLACEHOLDER' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.jobManifest }}",
+        "options": {
+          "allowUnauthorizedCerts": true,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "create-k8s-job",
+      "name": "Create K8s Build Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2160,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Monitor K8s job status (simplified - in production would poll)\nconst jobResponse = $input.item.json.body || {};\nconst packageName = $input.item.json.packageName;\n\n// In production: Poll job status until complete\n// For demo: Simulate success\nreturn {\n  json: {\n    ...$input.item.json,\n    jobName: jobResponse.metadata?.name || 'unknown',\n    jobStatus: 'completed',\n    buildStatus: 'success',\n    specDiff: '--- a/python.spec\\n+++ b/python.spec\\n@@ -1,5 +1,5 @@\\n-Version: 3.11.0\\n+Version: 3.12.0',\n    changelog: $input.item.json.aiChangelog || '* Mon Jan 05 2025 Maintainer <maintainer@example.com> - 3.12.0\\n- Update to version 3.12.0',\n    buildLogs: 'Build completed successfully'\n  }\n};"
+      },
+      "id": "monitor-job",
+      "name": "Monitor Job Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2432,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Analyze this build result:\n\nPackage: {{ $json.packageName }}\nBuild Status: {{ $json.buildStatus }}\nJob Name: {{ $json.jobName }}\n\nBuild Logs:\n{{ $json.buildLogs || 'No logs available' }}\n\nSpec Diff:\n{{ $json.specDiff || 'No diff available' }}\n\nProvide:\n1. Build result analysis\n2. Success indicators or failure reasons\n3. Recommendations for next steps\n4. Risk assessment",
+        "options": {}
+      },
+      "id": "ai-analyze-build",
+      "name": "AI: Analyze Build Results",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        2640,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Parse AI build analysis\nconst aiOutput = $input.item.json.output || $input.item.json.text || '';\n\n// Extract build assessment\nlet buildAssessment = 'success';\nif (aiOutput.toLowerCase().includes('failure') || aiOutput.toLowerCase().includes('error')) {\n  buildAssessment = 'failure';\n} else if (aiOutput.toLowerCase().includes('warning') || aiOutput.toLowerCase().includes('caution')) {\n  buildAssessment = 'warning';\n}\n\n// Extract recommendations\nconst recommendations = aiOutput.split('\\n').filter(line => \n  line.toLowerCase().includes('recommend') || \n  line.toLowerCase().includes('suggest') ||\n  line.toLowerCase().includes('should')\n).join('\\n');\n\nreturn {\n  json: {\n    ...$input.item.json,\n    aiBuildAnalysis: aiOutput,\n    aiBuildAssessment: buildAssessment,\n    aiBuildRecommendations: recommendations\n  }\n};"
+      },
+      "id": "parse-build-ai",
+      "name": "Parse Build AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3008,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "build-success",
+              "leftValue": "={{ $json.buildStatus }}",
+              "rightValue": "success",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-build-result",
+      "name": "Check Build Result",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3232,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.channelId }}",
+          "mode": "id"
+        },
+        "messageType": "block",
+        "blocksUi": {
+          "blocks": [
+            {
+              "type": "section",
+              "text": {
+                "type": "mrkdwn",
+                "text": "=*✅ Build Successful*\n\nPackage: {{ $json.packageName }}\nFactory Version: {{ $json.factoryVersion }}\nUpstream Version: {{ $json.upstreamVersion }}\n\n*AI Analysis:*\n{{ $json.aiBuildAnalysis || 'Analysis pending' }}\n\n*Approve SR submission?*"
+              }
+            },
+            {
+              "type": "actions",
+              "elements": [
+                {
+                  "type": "button",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "✅ Approve"
+                  },
+                  "value": "approve",
+                  "action_id": "approve_sr"
+                },
+                {
+                  "type": "button",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "❌ Reject"
+                  },
+                  "value": "reject",
+                  "action_id": "reject_sr"
+                }
+              ]
+            }
+          ]
+        },
+        "otherOptions": {}
+      },
+      "id": "slack-approval",
+      "name": "Slack: Request Approval",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        3616,
+        -208
+      ],
+      "webhookId": "9a77bddb-d252-469a-89f6-831bd750092c"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "=obs-approval",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "wait-for-approval",
+      "name": "Wait for Approval",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        3856,
+        -160
+      ],
+      "webhookId": "ef833b0a-bda0-4ae5-9961-5c14a0258eb0"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Parse approval response from Slack\nconst payload = $input.item.json.body?.payload || $input.item.json || {};\nconst actions = payload.actions || [];\n\nlet approved = false;\nif (actions.length > 0) {\n  approved = actions[0].value === 'approve';\n}\n\nreturn {\n  json: {\n    ...$input.item.json,\n    approved: approved,\n    action: actions[0]?.value || 'unknown'\n  }\n};"
+      },
+      "id": "parse-approval",
+      "name": "Parse Approval",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4080,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "approved-check",
+              "leftValue": "={{ $json.approved }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-approval",
+      "name": "Check Approval",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        4400,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Submit SR (dummy - in production would call osc sr)\nconst packageName = $input.item.json.packageName || 'unknown';\n\n// In production: Execute 'osc sr' command via K8s job\n// For now, return dummy SR number\nconst srNumber = 'SR#' + Math.floor(Math.random() * 10000);\n\nreturn {\n  json: {\n    ...$input.item.json,\n    srNumber: srNumber,\n    srStatus: 'submitted',\n    srUrl: 'https://build.opensuse.org/request/show/' + srNumber\n  }\n};"
+      },
+      "id": "submit-sr",
+      "name": "Submit SR (Dummy)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4672,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.channelId }}",
+          "mode": "id"
+        },
+        "text": "=✅ SR Submitted Successfully\n\nPackage: {{ $json.packageName }}\nSR Number: {{ $json.srNumber }}\nSR URL: {{ $json.srUrl }}",
+        "otherOptions": {}
+      },
+      "id": "slack-sr-submitted",
+      "name": "Slack: SR Submitted",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        5040,
+        -224
+      ],
+      "webhookId": "d7e18ffa-4b65-45ed-a542-4ffc80b40218"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.channelId }}",
+          "mode": "id"
+        },
+        "text": "=❌ SR Submission Rejected\n\nPackage: {{ $json.packageName }}\nNo changes submitted.",
+        "otherOptions": {}
+      },
+      "id": "slack-rejected",
+      "name": "Slack: Rejected",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        4672,
+        0
+      ],
+      "webhookId": "5eca11b8-cea1-4fb4-b293-5b53826ccb2d"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.channelId }}",
+          "mode": "id"
+        },
+        "text": "=❌ Build Failed\n\nPackage: {{ $json.packageName }}\nFactory Version: {{ $json.factoryVersion }}\nUpstream Version: {{ $json.upstreamVersion }}\n\n*AI Analysis:*\n{{ $json.aiBuildAnalysis || 'Analysis pending' }}\n\nManual intervention required. Check build logs.",
+        "otherOptions": {}
+      },
+      "id": "slack-build-failed",
+      "name": "Slack: Build Failed",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        3632,
+        0
+      ],
+      "webhookId": "c87cf041-02e6-463c-a96f-b287c1b862b4"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.channelId }}",
+          "mode": "id"
+        },
+        "text": "=ℹ️ No Update Needed\n\nPackage: {{ $json.packageName }}\nFactory Version: {{ $json.factoryVersion }}\nUpstream Version: {{ $json.upstreamVersion }}\n\nPackage is up to date.",
+        "otherOptions": {}
+      },
+      "id": "slack-no-update",
+      "name": "Slack: No Update Needed",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        1904,
+        256
+      ],
+      "webhookId": "b49f346a-e358-4e0e-b94e-e0247a9910cd"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.channelId }}",
+          "mode": "id"
+        },
+        "text": "=📊 Package Check Result\n\nPackage: {{ $json.packageName }}\nFactory Version: {{ $json.factoryVersion }}\nUpstream Version: {{ $json.upstreamVersion }}\nUpdate Needed: {{ $json.updateNeeded ? 'Yes' : 'No' }}",
+        "otherOptions": {}
+      },
+      "id": "slack-check-result",
+      "name": "Slack: Check Result",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        1056,
+        752
+      ],
+      "webhookId": "ab997816-1918-407e-a893-749087aa518f"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Slack Trigger": {
+      "main": [
+        [
+          {
+            "node": "Parse Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Command": {
+      "main": [
+        [
+          {
+            "node": "Check If Skip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Skip": {
+      "main": [
+        [
+          {
+            "node": "Get Factory Version",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack: Check Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Factory Version": {
+      "main": [
+        [
+          {
+            "node": "Parse Factory Version",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Factory Version": {
+      "main": [
+        [
+          {
+            "node": "Get Upstream Version",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Upstream Version": {
+      "main": [
+        [
+          {
+            "node": "Compare Versions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare Versions": {
+      "main": [
+        [
+          {
+            "node": "AI: Analyze Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Analyze Update": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "ai_languageModel": [
+        [
+          {
+            "node": "Ollama Chat Model",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Check Action Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Action Type": {
+      "main": [
+        [
+          {
+            "node": "Check If Update Needed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack: Check Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Update Needed": {
+      "main": [
+        [
+          {
+            "node": "Build Job Manifest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack: No Update Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Job Manifest": {
+      "main": [
+        [
+          {
+            "node": "Create K8s Build Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create K8s Build Job": {
+      "main": [
+        [
+          {
+            "node": "Monitor Job Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Monitor Job Status": {
+      "main": [
+        [
+          {
+            "node": "AI: Analyze Build Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Analyze Build Results": {
+      "main": [
+        [
+          {
+            "node": "Parse Build AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "ai_languageModel": [
+        [
+          {
+            "node": "Ollama Chat Model",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Build AI Response": {
+      "main": [
+        [
+          {
+            "node": "Check Build Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Build Result": {
+      "main": [
+        [
+          {
+            "node": "Slack: Request Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack: Build Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack: Request Approval": {
+      "main": [
+        [
+          {
+            "node": "Wait for Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Approval": {
+      "main": [
+        [
+          {
+            "node": "Parse Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Approval": {
+      "main": [
+        [
+          {
+            "node": "Check Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Approval": {
+      "main": [
+        [
+          {
+            "node": "Submit SR (Dummy)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack: Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit SR (Dummy)": {
+      "main": [
+        [
+          {
+            "node": "Slack: SR Submitted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "23474eb3-104e-4796-8113-064daf385906",
+  "meta": {
+    "instanceId": "fb2e87f54f136c01f4dfd0e698a05ae7e5ee0cc3b62eea7496e4f0fd7fcab55a"
+  },
+  "id": "IqskXFIlVPCaKOUn",
+  "tags": []
+}
